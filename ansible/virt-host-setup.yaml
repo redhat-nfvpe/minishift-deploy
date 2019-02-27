@@ -1,0 +1,164 @@
+---
+- name: Bootstrap OpenShift 4.x host
+  hosts: openshift_hosts
+  gather_facts: yes
+  become: true
+  become_user: root
+
+  vars:
+    libvirtd_listen_tls: 0
+    libvirtd_listen_tcp: 1
+    libvirtd_tcp_port: 16509
+    libvirtd_auth_tcp: none
+    openshift_base_domain: tt.testing
+
+  tasks:
+    - name: Update system to latest packages before starting (will reboot if changes happen)
+      yum:
+        name: '*'
+        state: latest
+      register: yum_upgrade
+
+    - name: Rebooting system if packages were updated
+      reboot:
+      when: yum_upgrade.changed
+
+    - name: Install dependencies
+      package:
+        name: "{{ packages }}"
+        state: present
+      vars:
+        packages:
+          - compat-openssl10
+          - libvirt
+          - libvirt-devel
+          - libvirt-daemon-kvm
+          - NetworkManager
+          - python3-firewall
+          - python3-libvirt
+          - python3-lxml
+          - qemu-kvm
+
+    - name: Enable libvirtd
+      systemd:
+        name: libvirtd.service
+        state: started
+        enabled: yes
+
+    - name: Provide user permissions for qemu:///system
+      template:
+        src: polkit-80-libvirt.rules.j2
+        dest: /etc/polkit-1/rules.d/80-libvirt.rules
+      notify:
+        - restart_libvirtd
+
+    - name: Configure libvirt to accept TCP connections
+      template:
+        src: etc-libvirt-libvirtd.conf.j2
+        dest: /etc/libvirt/libvirtd.conf
+      notify:
+        - restart_libvirtd
+
+    - name: Configure the service running to pass --listen to libvirtd
+      template:
+        src: etc-sysconfig-libvirtd.j2
+        dest: /etc/sysconfig/libvirtd
+      notify:
+        - restart_libvirtd
+
+    - name: Force libvirtd by flushing handlers if any were triggered
+      meta: flush_handlers
+
+# TODO: for now the use of firewalld module on F29 (python3) looks to be broken
+#    - name: Add source network 192.168.126.0/24
+#      firewalld:
+#        zone: FedoraServer
+#        source: 192.168.126.0/24
+#        state: enabled
+#
+#    - name: Add port 16509
+#      firewalld:
+#        zone: FedoraServer
+#        port: 16509
+#        state: enabled
+
+    - name: Get default zone for firewall
+      command: firewall-cmd --get-default-zone
+      register: firewalld_default_zone
+
+    - name: Add source network 192.168.126.0/24
+      command: firewall-cmd --zone={{ firewalld_default_zone.stdout }} --add-source=192.168.126.0/24
+
+    - name: Add port 16509
+      command: firewall-cmd --zone={{ firewalld_default_zone.stdout }} --add-port=16509/tcp
+
+    - name: Get facts about current pools
+      virt_pool:
+        command: facts
+
+    - block:
+        - name: Define default libvirt storage pool
+          virt_pool:
+            command: define
+            name: default
+            xml: '{{ lookup("template", "pool/default.xml.j2") }}'
+
+        - name: Build default libvirt storage pool
+          virt_pool:
+            command: build
+            name: default
+
+        - name: Start default libvirt storage pool
+          virt_pool:
+            command: start
+            name: default
+
+        - name: Autostart default libvirt storage pool
+          virt_pool:
+            autostart: yes
+            name: default
+      when: '"default" not in ansible_libvirt_pools'
+
+    - name: Validate we have IP forwarding enabled for IPv4
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: 1
+        sysctl_set: yes
+        state: present
+        reload: yes
+
+    - name: Setup DNS overlay
+      template:
+        src: etc-NetworkManager-dnsmasq.d-openshift.conf.j2
+        dest: /etc/NetworkManager/dnsmasq.d/openshift.conf
+      notify:
+        - restart_NetworkManager
+
+    - name: Enable dnsmasq for DNS lookups
+      template:
+        src: etc-NetworkManager-NetworkManager.conf.j2
+        dest: /etc/NetworkManager/NetworkManager.conf
+      notify:
+        - restart_NetworkManager
+
+    - name: Validate we have a home users .ssh directory and permissions
+      file:
+        state: directory
+        path: "{{ ansible_env.HOME }}/.ssh"
+        mode: 0700
+
+    - name: Make sure we have a public/private keypair setup
+      command: ssh-keygen -q -t rsa -f {{ ansible_env.HOME }}/.ssh/id_rsa -C "" -N ""
+      args:
+        creates: "{{ ansible_env.HOME }}/.ssh/id_rsa"
+
+  handlers:
+    - name: restart_libvirtd
+      systemd:
+        name: libvirtd.service
+        state: restarted
+
+    - name: restart_NetworkManager
+      systemd:
+        name: NetworkManager.service
+        state: restarted

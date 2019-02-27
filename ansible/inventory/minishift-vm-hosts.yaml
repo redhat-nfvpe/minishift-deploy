@@ -1,0 +1,19 @@
+---
+all:
+  hosts:
+    kvm:
+      ansible_connection: local
+    nfvpe_17:
+      ansible_host: 10.19.111.38
+      ansible_private_key_file: /home/lmadsen/.ssh/id_rsa
+      ansible_user: root
+      ansible_python_interpreter: /usr/bin/python3
+  children:
+    kvm_hosts:
+      hosts:
+        kvm:
+    openshift_hosts:
+      hosts:
+        nfvpe_17:
+
+# vim: ft=yaml shiftwidth=2 tabstop=2 expandtab smartindent :

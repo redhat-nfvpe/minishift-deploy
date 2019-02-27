@@ -1,0 +1,13 @@
+---
+vm_location: "/home/libvirt/images"
+root_pass: "redhat"
+ssh_user: "root"
+host_bridge: "br0"
+
+guests:
+  minishift1:
+    mem: 8192
+    cpus: 2
+#  test5:
+#    mem: 512
+#    cpus: 1

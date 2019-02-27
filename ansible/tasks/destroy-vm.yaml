@@ -1,0 +1,29 @@
+---
+- hosts: kvm
+
+# The destroyed state does not seem to be idempotent, so check whether the VM
+# exists before destroying it.
+  tasks:
+  - name: Check the VM's status
+    virt:
+      name: "{{ vm }}"
+      command: list_vms
+      uri: "{{ libvirt_vm_uri | default(omit, true) }}"
+    register: result
+    become: yes
+
+  - block:
+      - name: Ensure the VM is absent
+        virt:
+          name: "{{ vm }}"
+          state: destroyed
+          uri: "{{ libvirt_vm_uri | default(omit, true) }}"
+        become: yes
+
+      - name: Ensure the VM is undefined
+        virt:
+          name: "{{ vm }}"
+          command: undefine
+          uri: "{{ libvirt_vm_uri | default(omit, true) }}"
+        become: yes
+    when: vm in result.list_vms
